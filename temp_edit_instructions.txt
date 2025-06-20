@@ -1,0 +1,107 @@
+Step 1: Add nextPlayTimeRef declaration near audioCtxRef and chunkBuffer.
+
+Search:
+  const audioCtxRef = useRef(null);
+  const chunkBuffer = useRef([]);
+  const CHUNKS_PER_PLAY = 29;
+
+Replace:
+  const audioCtxRef = useRef(null);
+  const chunkBuffer = useRef([]);
+  const CHUNKS_PER_PLAY = 29;
+  const nextPlayTimeRef = useRef(0);
+
+Step 2: Modify stopFlow function to reset nextPlayTimeRef.current.
+
+Search:
+  const stopFlow = () => {
+    if (workletNodeRef.current) workletNodeRef.current.disconnect();
+    if (sourceRef.current) sourceRef.current.disconnect();
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (audioCtxRef.current) audioCtxRef.current.close();
+    if (wsRef.current) wsRef.current.close();
+  };
+
+Replace:
+  const stopFlow = () => {
+    if (workletNodeRef.current) workletNodeRef.current.disconnect();
+    if (sourceRef.current) sourceRef.current.disconnect();
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (audioCtxRef.current) audioCtxRef.current.close();
+    if (wsRef.current) wsRef.current.close();
+    nextPlayTimeRef.current = 0;
+  };
+
+Step 3: Replace playAudioChunk function with optimized version.
+
+Search:
+  function playAudioChunk(arrayBuffer) {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    }
+    const flowAudioContext = audioCtxRef.current;
+
+    const dataView = new DataView(arrayBuffer);
+    const float32Array = new Float32Array(arrayBuffer.byteLength / 2);
+    for (let i = 0; i < float32Array.length; i++) {
+      const int16 = dataView.getInt16(i * 2, true);
+      float32Array[i] = int16 / 32768;
+    }
+
+    chunkBuffer.current.push(float32Array);
+
+    if (chunkBuffer.current.length >= CHUNKS_PER_PLAY) {
+      const totalLength = chunkBuffer.current.reduce((sum, chunk) => sum + chunk.length, 0);
+      const merged = new Float32Array(totalLength);
+      let offset = 0;
+      chunkBuffer.current.forEach(chunk => {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      });
+      chunkBuffer.current = [];
+
+      const audioBuffer = flowAudioContext.createBuffer(1, merged.length, 16000);
+      audioBuffer.copyToChannel(merged, 0);
+      const source = flowAudioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(flowAudioContext.destination);
+      source.start();
+    }
+  }
+
+Replace:
+  function playAudioChunk(arrayBuffer) {
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      nextPlayTimeRef.current = 0;
+    }
+    const flowAudioContext = audioCtxRef.current;
+
+    const dataView = new DataView(arrayBuffer);
+    const float32Array = new Float32Array(arrayBuffer.byteLength / 2);
+    for (let i = 0; i < float32Array.length; i++) {
+      const int16 = dataView.getInt16(i * 2, true);
+      float32Array[i] = int16 / 32768;
+    }
+
+    const audioBuffer = flowAudioContext.createBuffer(1, float32Array.length, 16000);
+    audioBuffer.copyToChannel(float32Array, 0);
+    const source = flowAudioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(flowAudioContext.destination);
+
+    const currentTime = flowAudioContext.currentTime;
+    if (nextPlayTimeRef.current < currentTime) {
+      nextPlayTimeRef.current = currentTime;
+    }
+    source.start(nextPlayTimeRef.current);
+    nextPlayTimeRef.current += audioBuffer.duration;
+
+    source.onended = () => {
+      source.disconnect();
+    };
+  }

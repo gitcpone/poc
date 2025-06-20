@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Speechmatics Flow Streaming</title>
+</head>
+<body>
+  <h2>Speechmatics Flow Agent Demo</h2>
+
+  <label>Enter JWT Token: <input type="text" id="token" style="width: 500px;"></label>
+  <button id="start-btn">Start</button>
+  <button id="close-btn">Close Socket</button>
+
+  <pre id="log" style="margin-top: 20px;"></pre>
+
+  <script>
+    let flowAudioContext = null;
+    let micStream = null;
+    let ws = null;
+
+    const log = (...args) => {
+      console.log(...args);
+      const out = document.getElementById("log");
+      out.textContent += args.join(" ") + "\n";
+    };
+
+    function initFlowAudio() {
+      if (!flowAudioContext) {
+        flowAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+      }
+    }
+
+    // Playback buffer
+    const chunkBuffer = [];
+    const CHUNKS_PER_PLAY = 20;
+
+    function playAudioChunk(arrayBuffer) {
+      initFlowAudio();
+
+      const dataView = new DataView(arrayBuffer);
+      const float32Array = new Float32Array(arrayBuffer.byteLength / 2);
+      for (let i = 0; i < float32Array.length; i++) {
+        const int16 = dataView.getInt16(i * 2, true);
+        float32Array[i] = int16 / 32768;
+      }
+
+      chunkBuffer.push(float32Array);
+
+      if (chunkBuffer.length >= CHUNKS_PER_PLAY) {
+        const totalLength = chunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+        const merged = new Float32Array(totalLength);
+        let offset = 0;
+        chunkBuffer.forEach(chunk => {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        });
+        chunkBuffer.length = 0;
+
+        const audioBuffer = flowAudioContext.createBuffer(1, merged.length, 44100);
+        audioBuffer.copyToChannel(merged, 0);
+        const source = flowAudioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(flowAudioContext.destination);
+        source.start();
+      }
+    }
+
+    async function startFlow() {
+      const token = document.getElementById("token").value.trim();
+      if (!token) return alert("Please enter a JWT token.");
+
+      initFlowAudio();
+      await flowAudioContext.resume(); // unlock audio playback
+
+      const url = `wss://flow.api.speechmatics.com/v1/flow?jwt=${token}`;
+      ws = new WebSocket(url);
+
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = async () => {
+        log("✅ WebSocket connected");
+
+        // Start conversation with default template
+        ws.send(JSON.stringify({
+          message: "StartConversation",
+          audio_format: {
+            type: "raw",
+            encoding: "pcm_f32le",
+            sample_rate: 44100
+          },
+          conversation_config: {
+            template_id: "default"
+          },
+          debug: { llm: true }
+        }));
+
+        // Start mic stream
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioCtx = new AudioContext({ sampleRate: 44100 });
+        const source = audioCtx.createMediaStreamSource(micStream);
+        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          // Only send if ws exists and is open
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(input.buffer); // send Float32 PCM
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          const data = JSON.parse(event.data);
+          if (data.message === "Transcript") {
+            const content = data.transcript?.alternatives?.[0]?.content;
+            if (content) log("🗣️", content);
+          }
+        } else if (event.data instanceof ArrayBuffer) {
+          playAudioChunk(event.data);
+        }
+      };
+
+      ws.onerror = (err) => {
+        log("❌ WebSocket error", err);
+      };
+
+      ws.onclose = () => {
+        log("🔌 WebSocket closed");
+      };
+    }
+
+    function closeSocket() {
+      if (ws) {
+        ws.close();
+        log("🛑 Close socket requested");
+        ws = null;
+      } else {
+        log("No active socket to close.");
+      }
+      // Stop microphone and processor
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+        micStream = null;
+      }
+      if (flowAudioContext) {
+        flowAudioContext.close();
+        flowAudioContext = null;
+      }
+    }
+
+    document.getElementById("start-btn").addEventListener("click", startFlow);
+    document.getElementById("close-btn").addEventListener("click", closeSocket);
+  </script>
+</body>
+</html>
