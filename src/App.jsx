@@ -11,6 +11,10 @@ function App() {
   const audioCtxRef = useRef(null);
   const nextPlayTimeRef = useRef(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [recording, setRecording] = useState(false);
+  const [conversationAudio, setConversationAudio] = useState([]);
+  const mediaRecorderRef = useRef(null);
+  const userChunksRef = useRef([]);
 
   // Move this here (top level, not inside startFlow)
   const lastPromptRef = useRef(null);
@@ -166,8 +170,18 @@ console.log(promptPairs);
   };
 
   const clearAll = () => {
-    setMessages([]);
+    // Stop recording if active
+    if (mediaRecorderRef.current && recording) {
+      mediaRecorderRef.current.stop();
+    }
+    setRecording(false);
+    setConversationAudio([]);
+    userChunksRef.current = [];
+    mediaRecorderRef.current = null;
+    // Reset any other refs or state related to recording here
+    // ...existing clear logic (e.g., clear messages, promptPairs, etc.)...
   };
+  const chatEndRef = useRef(null);
 
   function playAudioChunk(arrayBuffer) {
     if (!audioCtxRef.current) {
@@ -212,6 +226,71 @@ const result = promptPairs.map(item => {
         return item;
     }
 });
+
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [promptPairs]); // or [messages] if you want to scroll on every message
+
+
+
+
+
+  // Start recording user audio
+  const startRecording = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mediaRecorder = new window.MediaRecorder(stream);
+    userChunksRef.current = [];
+    mediaRecorder.ondataavailable = (e) => userChunksRef.current.push(e.data);
+    mediaRecorder.onstop = () => {
+      const userBlob = new Blob(userChunksRef.current, { type: "audio/webm" });
+      setConversationAudio((prev) => [
+        ...prev,
+        { speaker: "user", audio: userBlob }
+      ]);
+      // Simulate bot response after user finishes
+      setTimeout(() => {
+        simulateBotAudio();
+      }, 1000);
+    };
+    mediaRecorderRef.current = mediaRecorder;
+    mediaRecorder.start();
+    setRecording(true);
+  };
+
+  // Stop recording user audio
+  const stopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      setRecording(false);
+    }
+  };
+
+  // Simulate bot audio chunk (replace with real TTS/audio in production)
+  const simulateBotAudio = () => {
+    // Create a short silent WAV for demo
+    const wav = new Uint8Array([
+      82,73,70,70,36,0,0,0,87,65,86,69,102,109,116,32,16,0,0,0,1,0,1,0,0,62,0,0,0,124,0,0,2,0,16,0,100,97,116,97,0,0,0,0
+    ]);
+    const botBlob = new Blob([wav], { type: "audio/wav" });
+    setConversationAudio((prev) => [
+      ...prev,
+      { speaker: "bot", audio: botBlob }
+    ]);
+  };
+
+  // Download combined audio (simply concatenates blobs for demo)
+  const downloadConversation = () => {
+    const allBlobs = conversationAudio.map((item) => item.audio);
+    const merged = new Blob(allBlobs, { type: "audio/webm" });
+    const url = URL.createObjectURL(merged);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "conversation.webm";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
 
   return (
@@ -273,6 +352,15 @@ const result = promptPairs.map(item => {
         />
         <span style={{ marginLeft: 10 }}>{playbackSpeed.toFixed(1)}x</span>
       </div>
+
+      <div>
+        <button onClick={recording ? stopRecording : startRecording}>
+          {recording ? "Stop Recording (User)" : "Start Recording (User)"}
+        </button>
+        <button onClick={downloadConversation} disabled={conversationAudio.length === 0}>
+          Download Conversation Audio
+        </button>
+      </div>
       <div style={{ marginTop: 30, display: 'flex', gap: 20 }}>
         <div style={{ width:"70%" }}>
           <h3 style={{ borderBottom: '2px solid #333', paddingBottom: 5 }}>Prompt/Response (ResponseCompleted only):</h3>
@@ -327,10 +415,10 @@ const result = promptPairs.map(item => {
                     lineHeight: 1.4,
                   }}
                 >
-                  {pair.response.replace(/<\/?s1>/gi, '')}
-                </div>
+{pair.response.replace(/<\s*\/?\s*s\d+\s*>/gi, '')}           </div>
               </div>
             ))}
+            <div ref={chatEndRef} /> {/* This is the scroll target */}
           </div>
         </div>
         <div style={{ width: "30%" }}>
